@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
@@ -6,6 +6,7 @@ import speech_recognition as sr
 from flask_login import LoginManager, current_user
 from flask_mail import Mail, Message
 from config import Config
+import secrets
 
 
 app = Flask(__name__)
@@ -49,12 +50,17 @@ class Score(db.Model):
     def __repr__(self):
         return '<Score %r>' % self.score
 
+""""
+test: Get method in postman: http://127.0.0.1:5000/""" #------------------------------------------
+
+
 # Home page
 @app.route('/')
 def index():
-    return render_template('index.html')
+    helloindex = "This is the HomePage!"
+    return (helloindex)
 
-
+"""
 # Registration page
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -74,34 +80,77 @@ def register():
 
         return redirect(url_for('login'))
     return render_template('register.html')
+"""
 
+# Registration page ( no frontend - using only JSON)---------------------------------
 
-# Login page
-# Login page
-@app.route('/login', methods=['GET', 'POST'])
+"""
+test data: 
+{
+    "username": "TEST_USERNAME",
+    "email": "TEST_USERNAME@example.com",
+    "password": "TEST@PASS",
+    "age": 26,
+    "sex": "Male"
+}
+
+answer: {
+    "message": "Registration successful! You can now log in."
+}
+"""
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+    age = data.get('age')
+    sex = data.get('sex')
+
+    if not username or not email or not password or not age or not sex:
+        return jsonify({'error': 'Missing data'}), 400
+
+    hashed_password = generate_password_hash(password)
+
+    user = User(username=username, email=email, password=hashed_password, age=age, sex=sex)
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({'message': 'Registration successful! You can now log in.'}), 200
+
+# Login page ------------------------------------------------------------------------------------
+
+""""
+test in postman : 
+route: /login
+data (as raw json):
+{
+    "username": "your_username",
+    "password": "your_password"
+}
+
+"""
+@app.route('/login', methods=['POST'])
 def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+    data = request.json
 
-        user = User.query.filter_by(username=username).first()
+    username = data.get('username')
+    password = data.get('password')
 
-        if user and check_password_hash(user.password, password):
-            session['user_id'] = user.id  # Set the user as authenticated
-            flash('Login successful!', 'success')
-            if user.username == 'admin':
-                return redirect(url_for('admin'))
-            else:
-                return redirect(url_for('select_test'))  # Redirect to test selection page
-        else:
-            flash( 'Invalid username or password', 'info')
-            return render_template('login.html')
+    if not username or not password:
+        return jsonify({'error': 'Missing username or password'}), 400
 
-    return render_template('login.html')
+    user = User.query.filter_by(username=username).first()        #filter user by the username 
 
-import secrets
+    if user and check_password_hash(user.password, password):     #check_password_hash
+        session['user_id'] = user.id                              # user auth.
+        return jsonify({'message': 'Login successful!'}), 200
+    else:
+        return jsonify({'error': 'Incorrect username or password!'}), 401
 
-# Password reset page
+
+"""
 # Password reset page
 @app.route('/reset_password', methods=['GET', 'POST'])
 def reset_password():
@@ -133,80 +182,121 @@ def reset_password():
             return redirect(url_for('reset_password'))
 
     return render_template('reset_password.html')
+"""
+# ----------------------------NEW RESET PASS------------------------------------------
+@app.route('/reset_password', methods=['POST'])
+def reset_password():
+    data = request.json
 
+    email = data.get('email')
+
+    if not email:
+        return jsonify({'error': 'Missing email'}), 400
+
+    user = User.query.filter_by(email=email).first()
+
+    if user:
+        # Generate a password reset token
+        token = secrets.token_urlsafe(32)  # Generate a secure and random URL-safe token
+
+        # Save the token in the user's database record
+        user.reset_token = token
+        db.session.commit()
+
+        # For testing purposes, print the reset link instead of sending an email
+        reset_link = url_for('reset_password_confirm', token=token, _external=True)
+        print(f"Password reset link: {reset_link}")
+
+        flash('A password reset link has been sent to your email.', 'success')
+        return jsonify({'message': 'Password reset link sent to email'}), 200
+    else:
+        return jsonify({'error': 'Invalid email address'}), 404
 from werkzeug.security import generate_password_hash
 
+#---------------------------------------------------------------------------------------
 
 # Password reset confirmation page
-@app.route('/reset_password_confirm/<token>', methods=['GET', 'POST'])
+@app.route('/reset_password_confirm/<token>', methods=['POST'])
 def reset_password_confirm(token):
     # Verify the token
     user = User.query.filter_by(reset_token=token).first()
     if not user:
-        flash('Invalid or expired token.', 'danger')
-        return redirect(url_for('forgot_password'))
+        return jsonify({'error': 'Invalid or expired token'}), 401
 
-    if request.method == 'POST':
-        new_password = request.form['new_password']
-        confirm_password = request.form['confirm_password']
+    data = request.json
 
-        if new_password == confirm_password:
-            # Update the user's password in the database
-            user.password = generate_password_hash(new_password)
-            user.reset_token = None  # Reset the token after password change
-            db.session.commit()
+    new_password = data.get('new_password')
+    confirm_password = data.get('confirm_password')
 
-            flash('Password has been reset successfully!', 'success')
-            return redirect(url_for('login'))
-        else:
-            flash('Passwords do not match.', 'danger')
+    if not new_password or not confirm_password:
+        return jsonify({'error': 'Missing new_password or confirm_password'}), 400
 
-    return render_template('reset_password_confirm.html', token=token)
+    if new_password == confirm_password:
+        # Update the user's password in the database
+        user.password = generate_password_hash(new_password)
+        user.reset_token = None  # Reset the token after password change
+        db.session.commit()
 
+        return jsonify({'message': 'Password has been reset successfully!'}), 200
+    else:
+        return jsonify({'error': 'Passwords do not match'}), 400
+    
+"""
+TEST: 
+
+{
+    "new_password": "your_new_password",
+    "confirm_password": "your_confirm_password"
+}
+"""
+# After login the app requires users to choose a test to continue (a memory test):
 # Test selection page
+#---------------------------------------test selection page---------------------------------
+
 @app.route('/select_test')
 def select_test():
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    return render_template('select_test.html')
-
-
+    return render_template('select_test.html')       # cannot be changed now to be tested by postman
 
 # Logout
 @app.route('/logout')
 def logout():
     session.clear()
     flash('You have been logged out.', 'info')
-    return redirect(url_for('login'))
+    #return redirect(url_for('login'))
+    return "Logged out!"
 
 
-# Test selection page
-@app.route('/tests/<int:test_number>/<int:round_number>',methods=['GET', 'POST'])
+# Test selection page -------------------------------------------------------------------
+
+@app.route('/tests/<int:test_number>/<int:round_number>', methods=['GET'])
 def tests(test_number, round_number):
     if 'user_id' not in session:
-        return redirect(url_for('login'))
+        return jsonify({'error': 'User not authenticated'}), 401
 
-    # Load the target words for each test (you may need to define the target words for each test separately)
     target_words = {
-        1:['تراکتور','هویج','قناری','موکت','سیر','دوچرخه','یخچال','ببر','اتوبوس','میز','فلفل','گوریل','پرده','پارو','سوسمار','فیلم'],
-        2:[ 'لودر','گوجه','شتر','بخاری','ریحان','وانت','فریزر','گربه','مینی بوس','تخته','جعفری','گوسفند','پنجره','ویلچر','کلاغ','نعنا'],
-        3:['فرش','قطار','خیار','طوطی','کدو','هواپیما','اجاق','موش','ماشین','صندلی','کاهو','میمون','کمد','موتور','فیل','پیاز'],
+        1: ['تراکتور', 'هویج', 'قناری', 'موکت', 'سیر', 'دوچرخه', 'یخچال', 'ببر', 'اتوبوس', 'میز', 'فلفل', 'گوریل', 'پرده',
+            'پارو', 'سوسمار', 'فیلم'],
+        2: ['لودر', 'گوجه', 'شتر', 'بخاری', 'ریحان', 'وانت', 'فریزر', 'گربه', 'مینی بوس', 'تخته', 'جعفری', 'گوسفند', 'پنجره',
+            'ویلچر', 'کلاغ', 'نعنا'],
+        3: ['فرش', 'قطار', 'خیار', 'طوطی', 'کدو', 'هواپیما', 'اجاق', 'موش', 'ماشین', 'صندلی', 'کاهو', 'میمون', 'کمد', 'موتور',
+            'فیل', 'پیاز'],
 
-        4:['مترو','کامیون','اسفناج','زرافه','کمد','پیاز','موتور','کابینت','گورخر','چراغ','کرفس','گاو','مبل','قایق','سنجاب','کلم']
+        4: ['مترو', 'کامیون', 'اسفناج', 'زرافه', 'کمد', 'پیاز', 'موتور', 'کابینت', 'گورخر', 'چراغ', 'کرفس', 'گاو', 'مبل', 'قایق',
+            'سنجاب', 'کلم']
 
     }
-   
-        
-    #audio_file = f'test{test_number}.m4a'  #
-    
-    return render_template('tests.html', target_words=target_words, round_number=round_number,test_number=test_number)
 
+    return jsonify({'target_words': target_words.get(test_number, []), 'round_number': round_number,
+                    'test_number': test_number})
 
 # Test page (record and transcribe)
 import os
 from pydub import AudioSegment
 
+"""
 @app.route('/record', methods=['POST'])
 def record():
     if 'user_id' not in session:
@@ -303,11 +393,118 @@ def record():
     return render_template('next_round.html', test_number=test_number, round_number=round_number,
                            transcribed_words=transcribed_words, total_words=total_words,
                            correct_words=correct_words, incorrect_words=incorrect_words)
+"""
+@app.route('/record', methods=['POST'])
+def record():
+    if 'user_id' not in session:
+        return jsonify({'error': 'User not authenticated'}), 401
 
-# User profile page
+    # Get the user's input from the request
+    data = request.json
+    test_number = data.get('test_number')
+    round_number = data.get('round_number')
+
+    # Ensure 'audio' key is present in the request
+    if 'audio' not in data:
+        return jsonify({'error': 'No audio file provided'}), 400
+
+    # Extract the audio path from the request data
+    audio_path = data['audio']
+
+    # Convert to PCM WAV if necessary
+    audio_format = audio_path.split('.')[-1]
+    if audio_format == 'm4a' or audio_format == 'mp3':
+        audio_content = AudioSegment.from_file(audio_path, format=audio_format)
+        audio_content = audio_content.set_frame_rate(16000).set_channels(1)
+        wav_save_path = os.path.splitext(audio_path)[0] + '.wav'
+        audio_content.export(wav_save_path, format='wav')
+        audio_path = wav_save_path
+
+    # Perform speech recognition on the saved audio file
+    recognizer = sr.Recognizer()
+    audio_data = sr.AudioFile(audio_path)
+    text = ""
+
+    try:
+        with audio_data as source:
+            audio_content = recognizer.record(source)
+            results = recognizer.recognize_google(audio_content, language="fa-IR", show_all=True)
+            if len(results) > 0:
+                text = [alt["transcript"] for alt in results["alternative"]]
+                text = " ".join(text)
+    except sr.UnknownValueError:
+        flash('Could not transcribe the audio. Please try again.', 'error')
+        return jsonify({'message': 'Transcription failed'}), 500
+
+    # Split the transcribed text into words
+    words = text.split()
+    words = set(words)
+
+    # Load the target words for the current test
+    target_words = {
+        1: ['تراکتور', 'هویج', 'قناری', 'موکت', 'سیر', 'دوچرخه', 'یخچال', 'ببر', 'اتوبوس', 'میز', 'فلفل', 'گوریل',
+            'پرده', 'پارو', 'سوسمار', 'فیلم'],
+        2: ['لودر', 'گوجه', 'شتر', 'بخاری', 'ریحان', 'وانت', 'فریزر', 'گربه', 'مینی بوس', 'تخته', 'جعفری', 'گوسفند',
+            'پنجره', 'ویلچر', 'کلاغ', 'نعنا'],
+        3: ['فرش', 'قطار', 'خیار', 'طوطی', 'کدو', 'هواپیما', 'اجاق', 'موش', 'ماشین', 'صندلی', 'کاهو', 'میمون', 'کمد', 'موتور',
+            'فیل', 'پیاز'],
+        4: ['مترو', 'کامیون', 'اسفناج', 'زرافه', 'کمد', 'پیاز', 'موتور', 'کابینت', 'گورخر', 'چراغ', 'کرفس', 'گاو', 'مبل', 'قایق',
+            'سنجاب', 'کلم']
+    }
+
+    # Compare the transcribed words with the target words and calculate the score
+    score = len(words.intersection(target_words.get(test_number, [])))
+
+    # Check if a score entry already exists for this user, test, and round
+    user_id = session['user_id']
+    score_entry = Score.query.filter_by(user_id=user_id, test_number=test_number, round_number=round_number).first()
+
+    if score_entry:
+        # Update the existing score entry
+        score_entry.score = score
+        score_entry.test_time = datetime.now()
+        db.session.commit()
+    else:
+        # Create a new score entry
+        score_entry = Score(user_id=user_id, test_number=test_number, round_number=round_number, score=score,
+                            test_time=datetime.now())
+        db.session.add(score_entry)
+        db.session.commit()
+
+    # Prepare the data to be displayed on the next page
+    response_data = {
+        'test_number': test_number,
+        'round_number': round_number,
+        'transcribed_words': list(words),
+        'total_words': len(words),
+        'correct_words': score,
+        'incorrect_words': len(words) - score
+    }
+
+    # Check if all four rounds are completed and return a response
+    if round_number == 4:
+        response_data['message'] = 'You have completed all four rounds!'
+    
+    return jsonify(response_data), 200
+"""
+test result: using a random audio file
+{
+    "correct_words": 0,
+    "incorrect_words": 0,
+    "round_number": 1,
+    "test_number": 1,
+    "total_words": 0,
+    "transcribed_words": []
+}"""
+
+# User profile page --------------------------------------------------------------------
 @app.route('/profile')
 def profile():
-    user_id = session['user_id']
+    user_id = session.get('user_id')
+
+    if not user_id:
+        return jsonify({'error': 'User not authenticated'}), 401
+
     user = User.query.filter_by(id=user_id).first()
     scores = Score.query.filter_by(user_id=user_id).all()
 
@@ -329,7 +526,43 @@ def profile():
         total_score = sum(score.score for score in scores if score.test_number == test_number)
         total_scores[test_number] = total_score
 
-    return render_template('profile.html', user=user, scores=scores, approved_tests=approved_tests, total_scores=total_scores)
+    response_data = {
+        'user': {'username': user.username, 'email': user.email, 'age': user.age, 'sex': user.sex},
+        'scores': [{'test_number': score.test_number, 'round_number': score.round_number, 'score': score.score,
+                    'test_time': score.test_time.strftime('%Y-%m-%d %H:%M:%S')} for score in scores],
+        'approved_tests': list(approved_tests),
+        'total_scores': total_scores
+    }
+
+    return jsonify(response_data), 200
+
+"""
+sample result: 
+{
+    "approved_tests": [],
+    "scores": [
+        {
+            "round_number": 1,
+            "score": 0.0,
+            "test_number": 1,
+            "test_time": "2024-02-29 16:03:23"
+        }
+    ],
+    "total_scores": {},
+    "user": {
+        "age": 26,
+        "email": "TEST_USERNAME@example.com",
+        "sex": "Male",
+        "username": "TEST_USERNAME"
+    }
+}"""
+
+
+# the rest is still unchanged --------------------------------------------------
+
+
+
+
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin():
